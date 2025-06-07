@@ -1,93 +1,118 @@
 const express = require('express');
-const router = express.Router();
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');
 const { body, validationResult } = require('express-validator');
+const { User } = require('../models');
+const authMiddleware = require('../middleware/auth');
 
-// Middleware to verify JWT token
-const verifyToken = (req, res, next) => {
-  const token = req.headers['authorization']?.split(' ')[1];
-  
-  if (!token) {
-    return res.status(403).json({ message: 'No token provided' });
-  }
+const router = express.Router();
 
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
-    next();
-  } catch (err) {
-    return res.status(401).json({ message: 'Invalid token' });
-  }
-};
-
-// Login route
-router.post('/login', [
-  body('email').isEmail().normalizeEmail(),
-  body('password').isLength({ min: 6 })
+// Register
+router.post('/register', [
+  body('name').trim().isLength({ min: 2 }).withMessage('Name must be at least 2 characters'),
+  body('email').isEmail().normalizeEmail().withMessage('Please provide a valid email'),
+  body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
+    return res.status(400).json({ 
+      message: 'Validation failed',
+      errors: errors.array()
+    });
   }
 
   try {
-    const { email, password } = req.body;
-    // Here you would typically query your database for the user
-    // For now, we'll use a mock user
-    const user = { id: 1, email, password: await bcrypt.hash('password123', 10) };
+    const { name, email, password } = req.body;
 
-    const isValidPassword = await bcrypt.compare(password, user.password);
-    if (!isValidPassword) {
-      return res.status(401).json({ message: 'Invalid credentials' });
+    // Check if user exists
+    const existingUser = await User.findOne({ where: { email } });
+    if (existingUser) {
+      return res.status(400).json({ message: 'User already exists' });
     }
 
+    // Create user (password will be hashed in the model hook)
+    const user = await User.create({ name, email, password });
+    
+    // Create token
     const token = jwt.sign(
-      { id: user.id, email: user.email },
+      { userId: user.id },
       process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
 
-    res.json({ token });
+    res.status(201).json({
+      message: 'User created successfully',
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email
+      }
+    });
   } catch (error) {
+    console.error('Registration error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Register route
-router.post('/register', [
-  body('email').isEmail().normalizeEmail(),
-  body('password').isLength({ min: 6 })
+// Login
+router.post('/login', [
+  body('email').isEmail().normalizeEmail().withMessage('Please provide a valid email'),
+  body('password').isLength({ min: 1 }).withMessage('Password is required')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
+    return res.status(400).json({ 
+      message: 'Validation failed',
+      errors: errors.array()
+    });
   }
 
   try {
     const { email, password } = req.body;
-    // Here you would typically check if user exists and create new user
-    // For now, we'll just return a success message
-    const hashedPassword = await bcrypt.hash(password, 10);
-    
-    // Mock user creation
-    const user = { id: 1, email, password: hashedPassword };
 
+    // Find user
+    const user = await User.findOne({ where: { email } });
+    if (!user) {
+      return res.status(400).json({ message: 'Invalid credentials' });
+    }
+
+    // Check password using the model method
+    const isMatch = await user.checkPassword(password);
+    if (!isMatch) {
+      return res.status(400).json({ message: 'Invalid credentials' });
+    }
+
+    // Create token
     const token = jwt.sign(
-      { id: user.id, email: user.email },
+      { userId: user.id },
       process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
 
-    res.status(201).json({ token });
+    res.json({
+      message: 'Login successful',
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email
+      }
+    });
   } catch (error) {
+    console.error('Login error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Protected route example
-router.get('/me', verifyToken, (req, res) => {
-  res.json({ user: req.user });
+// Get current user
+router.get('/me', authMiddleware, async (req, res) => {
+  res.json({
+    user: {
+      id: req.user.id,
+      name: req.user.name,
+      email: req.user.email
+    }
+  });
 });
 
 module.exports = router;
